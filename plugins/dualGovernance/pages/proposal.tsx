@@ -1,5 +1,8 @@
 import {
+  useAccount,
+  useBalance,
   usePublicClient,
+  useReadContract,
   useWaitForTransactionReceipt,
   useWriteContract,
 } from "wagmi";
@@ -20,6 +23,8 @@ import { PleaseWaitSpinner } from "@/components/please-wait";
 import { useSkipFirstRender } from "@/hooks/useSkipFirstRender";
 import { useRouter } from "next/router";
 import { PUB_DUAL_GOVERNANCE_PLUGIN_ADDRESS, PUB_CHAIN } from "@/constants";
+import { Address } from "viem";
+import { LockToVetoPluginAbi } from "../artifacts/LockToVetoPlugin.sol";
 
 type BottomSection = "description" | "vetoes";
 
@@ -27,18 +32,30 @@ export default function ProposalDetail({ id: proposalId }: { id: string }) {
   const { reload } = useRouter();
   const skipRender = useSkipFirstRender();
   const publicClient = usePublicClient({ chainId: PUB_CHAIN.id });
+  const { address } = useAccount();
+  const { data: votingToken } = useReadContract({
+    chainId: PUB_CHAIN.id,
+    address: PUB_DUAL_GOVERNANCE_PLUGIN_ADDRESS,
+    abi: OptimisticTokenVotingPluginAbi,
+    functionName: "getVotingToken",
+  });
+  const { data: userTokenBalance } = useBalance({
+    address,
+    token: votingToken as Address,
+    chainId: PUB_CHAIN.id,
+  });
 
   const { proposal, status: proposalFetchStatus } = useProposal(
     publicClient!,
     PUB_DUAL_GOVERNANCE_PLUGIN_ADDRESS,
     proposalId,
-    true
+    true,
   );
   const vetoes = useProposalVetoes(
     publicClient!,
     PUB_DUAL_GOVERNANCE_PLUGIN_ADDRESS,
     proposalId,
-    proposal
+    proposal,
   );
   const userCanVeto = useUserCanVeto(BigInt(proposalId));
 
@@ -57,12 +74,13 @@ export default function ProposalDetail({ id: proposalId }: { id: string }) {
   useEffect(() => {
     if (status === "idle" || status === "pending") return;
     else if (status === "error") {
+      console.log("Error;", error);
       if (error?.message?.startsWith("User rejected the request")) {
         addAlert("Transaction rejected by the user", {
           timeout: 4 * 1000,
         });
       } else {
-        addAlert("Could not create the proposal", { type: "error" });
+        addAlert("Could not create the veto", { type: "error" });
       }
       return;
     }
@@ -86,31 +104,36 @@ export default function ProposalDetail({ id: proposalId }: { id: string }) {
   }, [status, vetoTxHash, isConfirming, isConfirmed]);
 
   const vetoProposal = () => {
+    console.log(
+      proposalId,
+      userTokenBalance,
+      PUB_DUAL_GOVERNANCE_PLUGIN_ADDRESS,
+    );
     vetoWrite({
-      abi: OptimisticTokenVotingPluginAbi,
+      abi: LockToVetoPluginAbi,
       address: PUB_DUAL_GOVERNANCE_PLUGIN_ADDRESS,
       functionName: "veto",
-      args: [proposalId],
+      args: [proposalId, userTokenBalance?.value],
     });
   };
 
   const showProposalLoading = getShowProposalLoading(
     proposal,
-    proposalFetchStatus
+    proposalFetchStatus,
   );
   const showTransactionLoading = status === "pending" || isConfirming;
 
   if (skipRender || !proposal || showProposalLoading) {
     return (
-      <section className="flex justify-left items-left w-screen max-w-full min-w-full">
+      <section className="justify-left items-left flex w-screen min-w-full max-w-full">
         <PleaseWaitSpinner />
       </section>
     );
   }
 
   return (
-    <section className="flex flex-col items-center w-screen max-w-full min-w-full">
-      <div className="flex justify-between py-5 w-full">
+    <section className="flex w-screen min-w-full max-w-full flex-col items-center">
+      <div className="flex w-full justify-between py-5">
         <ProposalHeader
           proposalNumber={Number(proposalId)}
           proposal={proposal}
@@ -120,12 +143,12 @@ export default function ProposalDetail({ id: proposalId }: { id: string }) {
         />
       </div>
 
-      <div className="grid xl:grid-cols-3 lg:grid-cols-2 my-10 gap-10 w-full">
+      <div className="my-10 grid w-full gap-10 lg:grid-cols-2 xl:grid-cols-3">
         <VetoTally
           voteCount={proposal?.vetoTally}
           votePercentage={
             Number(
-              proposal?.vetoTally / proposal?.parameters?.minVetoVotingPower
+              proposal?.vetoTally / proposal?.parameters?.minVetoVotingPower,
             ) * 100
           }
         />
@@ -135,9 +158,9 @@ export default function ProposalDetail({ id: proposalId }: { id: string }) {
           snapshotBlock={proposal?.parameters?.snapshotBlock}
         />
       </div>
-      <div className="py-12 w-full">
-        <div className="flex flex-row space-between">
-          <h2 className="flex-grow text-3xl text-neutral-900 font-semibold">
+      <div className="w-full py-12">
+        <div className="space-between flex flex-row">
+          <h2 className="flex-grow text-3xl font-semibold text-neutral-900">
             {bottomSection === "description" ? "Description" : "Vetoes"}
           </h2>
           <ToggleGroup
@@ -167,7 +190,7 @@ export default function ProposalDetail({ id: proposalId }: { id: string }) {
 
 function getShowProposalLoading(
   proposal: ReturnType<typeof useProposal>["proposal"],
-  status: ReturnType<typeof useProposal>["status"]
+  status: ReturnType<typeof useProposal>["status"],
 ) {
   if (!proposal && status.proposalLoading) return true;
   else if (status.metadataLoading && !status.metadataError) return true;
